@@ -1,22 +1,62 @@
 import schedule
 import time
-import json
+import sqlite3
 import os
 from datetime import datetime
 
-REMINDERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reminders.json")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reminders.db")
+
+
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_type TEXT NOT NULL,
+                time_str TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.commit()
 
 
 def load_reminders():
-    if not os.path.exists(REMINDERS_FILE):
-        return []
-    with open(REMINDERS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, schedule_type, time_str, message FROM reminders ORDER BY id"
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "type": row["schedule_type"],
+                "time": row["time_str"],
+                "message": row["message"],
+            }
+            for row in rows
+        ]
 
 
-def save_reminders(reminders):
-    with open(REMINDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(reminders, f, ensure_ascii=False, indent=2)
+def insert_reminder(schedule_type, time_str, message):
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "INSERT INTO reminders (schedule_type, time_str, message, created_at) VALUES (?, ?, ?, ?)",
+            (schedule_type, time_str, message, datetime.now().isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def delete_reminder_by_id(reminder_id):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        conn.commit()
 
 
 def notify(message):
@@ -28,16 +68,15 @@ def notify(message):
 
 
 def add_reminder(schedule_type, time_str, message):
-    reminders = load_reminders()
     reminder = {
         "type": schedule_type,
         "time": time_str,
         "message": message,
     }
-    reminders.append(reminder)
-    save_reminders(reminders)
+    reminder_id = insert_reminder(schedule_type, time_str, message)
+    reminder["id"] = reminder_id
     _register_reminder(reminder)
-    print(f"✅ 已添加提醒: [{schedule_type}] {time_str} - {message}")
+    print(f"✅ 已添加提醒 (ID: {reminder_id}): [{schedule_type}] {time_str} - {message}")
 
 
 def _register_reminder(reminder):
@@ -70,11 +109,12 @@ def _register_reminder(reminder):
 
 
 def restore_reminders():
+    init_db()
     reminders = load_reminders()
     for reminder in reminders:
         _register_reminder(reminder)
     if reminders:
-        print(f"📋 已从文件恢复 {len(reminders)} 条提醒")
+        print(f"📋 已从数据库恢复 {len(reminders)} 条提醒")
 
 
 def list_reminders():
@@ -83,10 +123,12 @@ def list_reminders():
         print("📭 暂无提醒")
         return
     print(f"\n📋 当前提醒列表 (共 {len(reminders)} 条):")
-    print("-" * 50)
+    print("-" * 55)
+    print(f"  {'序号':<4} {'ID':<4} {'类型':<8} {'时间':<8} 内容")
+    print("-" * 55)
     for i, r in enumerate(reminders, 1):
-        print(f"  {i}. [{r['type']}] {r['time']} - {r['message']}")
-    print("-" * 50)
+        print(f"  {i:<4} {r['id']:<4} {r['type']:<8} {r['time']:<8} {r['message']}")
+    print("-" * 55)
 
 
 def delete_reminder(index):
@@ -94,9 +136,9 @@ def delete_reminder(index):
     if index < 1 or index > len(reminders):
         print(f"⚠️ 无效序号: {index}，当前共 {len(reminders)} 条提醒")
         return
-    removed = reminders.pop(index - 1)
-    save_reminders(reminders)
-    print(f"🗑️ 已删除提醒: [{removed['type']}] {removed['time']} - {removed['message']}")
+    removed = reminders[index - 1]
+    delete_reminder_by_id(removed["id"])
+    print(f"🗑️ 已删除提醒 (ID: {removed['id']}): [{removed['type']}] {removed['time']} - {removed['message']}")
     print("💡 提示: 删除后需重启服务才能生效")
 
 
